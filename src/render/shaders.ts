@@ -132,6 +132,12 @@ void main() {
   waterCol *= mix(0.7, 1.15, clamp(n.y, 0.0, 1.0)); // 波面朝向增减光
   vec3 above = mix(waterCol, skyRef, fres) + uSunColor * spec * 1.4;
 
+  // 浪尖透光（SSS 近似）：逆光时太阳穿过波峰，波体散射出青绿光——真实海浪
+  // 最具辨识度的质感之一。参考 abyssal-ocean（MIT）backLit 分支，按本项目
+  // uniforms/峰值归一化本地化：peakNorm 加权波峰，视线与太阳反向时最强。
+  float backLit = pow(max(dot(V, -L), 0.0), 3.0) * peakNorm;
+  above += vec3(0.10, 0.42, 0.36) * backLit * 0.55;
+
   // ---- 水下仰视（背面）----
   vec3 under = mix(uShallowColor * 1.6, uDeepColor * 1.1, depthMix * 0.6);
   under += uSkyHorizon * 0.18 * clamp(dot(n, V) * -1.0, 0.0, 1.0); // 波底透天光

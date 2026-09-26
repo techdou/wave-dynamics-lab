@@ -6,6 +6,10 @@
  * whitecapIntensity；运行期只依赖 core + physics，通过 store 只读状态 + 事件通信。
  */
 import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import type { SimClock } from '../core/clock';
 import type { Store } from '../core/store';
 import type { SimState, ViewKind } from '../core/types';
@@ -25,6 +29,7 @@ import {
 import { degToRad } from './logic/mathUtils';
 import { createSkyDome } from './skyDome';
 import { createMarineSnow } from './marineSnow';
+import { createUnderwaterPass } from './underwaterPass';
 import { createTracerSystem } from './tracerSystem';
 import { defaultTracerLayout } from './logic/tracerLayout';
 import { packWaveComponents, planWorldSize, createWaveUniformPack } from './logic/uniforms';
@@ -83,6 +88,10 @@ export function createRenderer(deps: RendererDeps): Renderer {
 
   // ---------- WebGL 基础 ----------
   const threeRenderer = new THREE.WebGLRenderer({ antialias: true });
+  // ACES 电影级色调映射由后处理链的 OutputPass 统一执行（渲染到 linear HDR RT）；
+  // 自研 ShaderMaterial 不含 tonemapping chunk，正好保持线性输出交给链尾。
+  threeRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+  threeRenderer.toneMappingExposure = 1.12;
   threeRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   threeRenderer.setSize(container.clientWidth || 1, container.clientHeight || 1);
   threeRenderer.domElement.style.display = 'block';
@@ -129,6 +138,21 @@ export function createRenderer(deps: RendererDeps): Renderer {
 
   const props = createSceneProps();
   scene.add(props.group);
+
+  // ---------- 后处理链（全部来自 three 官方 addons，零新增依赖）----------
+  // RenderPass(线性 HDR) → UnrealBloom(太阳高光/白帽微光) → Underwater(水下扭曲) → OutputPass(ACES+sRGB)
+  const composer = new EffectComposer(threeRenderer);
+  composer.addPass(new RenderPass(scene, rig.camera));
+  const bloomPass = new UnrealBloomPass(
+    new THREE.Vector2(container.clientWidth || 1, container.clientHeight || 1),
+    0.32, // strength：克制的高光泛光
+    0.55, // radius
+    0.82, // threshold：只让高光与泡沫亮部泛光
+  );
+  composer.addPass(bloomPass);
+  const underwaterPass = createUnderwaterPass();
+  composer.addPass(underwaterPass);
+  composer.addPass(new OutputPass());
 
   // ---------- 运行时状态 ----------
   const pack = createWaveUniformPack();
@@ -284,8 +308,9 @@ export function createRenderer(deps: RendererDeps): Renderer {
     whitecapField.setPixelScale(pixelScale);
     sprayField.setPixelScale(pixelScale);
     marineSnow.update(waveT, underwaterBlend, pixelScale);
+    underwaterPass.update(underwaterBlend, waveT);
 
-    threeRenderer.render(scene, rig.camera);
+    composer.render();
   }
 
   // ---------- store / clock 订阅 ----------
@@ -309,6 +334,7 @@ export function createRenderer(deps: RendererDeps): Renderer {
     const w = container.clientWidth || 1;
     const h = container.clientHeight || 1;
     threeRenderer.setSize(w, h);
+    composer.setSize(w, h);
     rig.camera.aspect = w / h;
     rig.camera.updateProjectionMatrix();
   };
@@ -360,6 +386,7 @@ export function createRenderer(deps: RendererDeps): Renderer {
       tracer.dispose();
       props.dispose();
       scene.remove(rig.camera, ocean.mesh, sky.mesh, whitecapField.points, sprayField.points, marineSnow.points, tracer.group, props.group, dirLight, hemiLight);
+      composer.dispose();
       threeRenderer.dispose();
       threeRenderer.forceContextLoss();
       threeRenderer.domElement.remove();
