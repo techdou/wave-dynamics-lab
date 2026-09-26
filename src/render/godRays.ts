@@ -52,7 +52,9 @@ export function createGodRaysPass(mask: THREE.Texture): ShaderPass {
   const shader = {
     uniforms: {
       tDiffuse: { value: null },
-      tMask: { value: mask },
+      // 注意：此处不能直接放 render target 纹理——ShaderPass 构造时会
+      // UniformsUtils.clone，RT 纹理会被置 null 并告警；构造后再赋值。
+      tMask: { value: null },
       uSunScreen: { value: new THREE.Vector2(0.5, 0.5) },
       uIntensity: { value: 0 },
     },
@@ -93,7 +95,9 @@ export function createGodRaysPass(mask: THREE.Texture): ShaderPass {
       }
     `,
   };
-  return new ShaderPass(shader);
+  const pass = new ShaderPass(shader);
+  (pass.uniforms as { [k: string]: { value: unknown } })['tMask']!.value = mask;
+  return pass;
 }
 
 /** 从 uniforms 取类型化值的辅助（ShaderPass 的 uniforms 键为可选索引类型） */
