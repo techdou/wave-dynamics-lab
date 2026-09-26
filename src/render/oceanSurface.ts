@@ -13,10 +13,20 @@ export const VISUAL_DEFAULT_DEPTH = 80;
 export interface OceanSurface {
   mesh: THREE.Mesh;
   /** 每帧同步 uniform（复用 pack 的 Float32Array 引用，无额外分配） */
-  update(pack: WaveUniformPack, waveTime: number, whitecap: number, waterDepth: number): void;
+  update(
+    pack: WaveUniformPack,
+    waveTime: number,
+    whitecap: number,
+    waterDepth: number,
+    foamTex?: THREE.Texture | null,
+  ): void;
   setWorldSize(size: number): void;
   dispose(): void;
 }
+
+/** 无泡沫缓冲时的回退纹理（1×1 黑；纯逻辑测试路径用） */
+const EMPTY_FOAM: THREE.Texture = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+EMPTY_FOAM.needsUpdate = true;
 
 function linearColor(hex: string): THREE.Vector3 {
   const c = new THREE.Color().setStyle(hex);
@@ -53,6 +63,8 @@ export function createOceanSurface(): OceanSurface {
     uDeepColor: { value: linearColor('#0a2f3f') },
     uSkyHorizon: { value: linearColor('#8fa8a3') },
     uSkyZenith: { value: linearColor('#22343c') },
+    uFoamTex: { value: EMPTY_FOAM },
+    uFoamWorldSize: { value: 240 },
   };
   const material = new THREE.ShaderMaterial({
     vertexShader: OCEAN_VERT,
@@ -67,7 +79,7 @@ export function createOceanSurface(): OceanSurface {
 
   return {
     mesh,
-    update(pack, waveTime, whitecap, waterDepth) {
+    update(pack, waveTime, whitecap, waterDepth, foamTex) {
       // 直接引用 pack 的缓冲：packWaveComponents 每帧覆写同一 Float32Array
       uniforms.uAmp.value = pack.amp;
       uniforms.uKx.value = pack.kx;
@@ -81,9 +93,11 @@ export function createOceanSurface(): OceanSurface {
       uniforms.uWaterDepth.value = Number.isFinite(waterDepth)
         ? waterDepth
         : VISUAL_DEFAULT_DEPTH;
+      uniforms.uFoamTex.value = foamTex ?? EMPTY_FOAM;
     },
     setWorldSize(size) {
       uniforms.uWorldSize.value = size;
+      uniforms.uFoamWorldSize.value = size;
     },
     dispose() {
       geometry.dispose();

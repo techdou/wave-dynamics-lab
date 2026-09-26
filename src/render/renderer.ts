@@ -30,6 +30,12 @@ import { degToRad } from './logic/mathUtils';
 import { createSkyDome } from './skyDome';
 import { createMarineSnow } from './marineSnow';
 import { createUnderwaterPass } from './underwaterPass';
+import { createFoamBuffer } from './foamBuffer';
+import {
+  createSunMaskMaterial,
+  createOccluderMaterial,
+  createGodRaysPass,
+} from './godRays';
 import { createTracerSystem } from './tracerSystem';
 import { defaultTracerLayout } from './logic/tracerLayout';
 import { packWaveComponents, planWorldSize, createWaveUniformPack } from './logic/uniforms';
@@ -139,10 +145,35 @@ export function createRenderer(deps: RendererDeps): Renderer {
   const props = createSceneProps();
   scene.add(props.group);
 
+  // ---------- 物理泡沫积累缓冲（ping-pong RT，见 foamBuffer.ts）----------
+  const foam = createFoamBuffer(threeRenderer);
+
+  // ---------- 体积光遮挡资源（太阳遮罩 + 黑色波面遮挡体，见 godRays.ts）----------
+  const MASK_SCALE = 0.5;
+  const maskRT = new THREE.WebGLRenderTarget(
+    Math.max(2, Math.floor((container.clientWidth || 1) * MASK_SCALE)),
+    Math.max(2, Math.floor((container.clientHeight || 1) * MASK_SCALE)),
+    { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter },
+  );
+  const sunMaskMaterial = createSunMaskMaterial(sunDir);
+  const blackOccluder = createOccluderMaterial();
+  const maskBackground = new THREE.Color(0x000000);
+  const skyMaterial = sky.mesh.material;
+  const oceanMaterial = ocean.mesh.material;
+  const maskHidden: THREE.Object3D[] = [
+    whitecapField.points,
+    sprayField.points,
+    marineSnow.points,
+    tracer.group,
+    props.group,
+  ];
+
   // ---------- 后处理链（全部来自 three 官方 addons，零新增依赖）----------
   // RenderPass(线性 HDR) → UnrealBloom(太阳高光/白帽微光) → Underwater(水下扭曲) → OutputPass(ACES+sRGB)
   const composer = new EffectComposer(threeRenderer);
   composer.addPass(new RenderPass(scene, rig.camera));
+  const godRaysPass = createGodRaysPass(maskRT.texture);
+  composer.addPass(godRaysPass);
   const bloomPass = new UnrealBloomPass(
     new THREE.Vector2(container.clientWidth || 1, container.clientHeight || 1),
     0.32, // strength：克制的高光泛光
@@ -236,6 +267,46 @@ export function createRenderer(deps: RendererDeps): Renderer {
     }
   }
 
+  const sunPoint = new THREE.Vector3();
+  const camForward = new THREE.Vector3();
+
+  /** 遮罩渲染：换材质 → 半分辨率 RT 渲染太阳+黑色波面 → 恢复（遮挡=真实波形） */
+  function renderSunMask(): void {
+    const bg = scene.background;
+    scene.background = maskBackground;
+    sky.mesh.material = sunMaskMaterial;
+    ocean.mesh.material = blackOccluder;
+    for (const obj of maskHidden) obj.visible = false;
+    threeRenderer.setRenderTarget(maskRT);
+    threeRenderer.render(scene, rig.camera);
+    threeRenderer.setRenderTarget(null);
+    scene.background = bg;
+    sky.mesh.material = skyMaterial;
+    ocean.mesh.material = oceanMaterial;
+    for (const obj of maskHidden) obj.visible = true;
+  }
+
+  function updateGodRays(): void {
+    rig.camera.getWorldDirection(camForward);
+    sunPoint.copy(sunDir).multiplyScalar(2000);
+    const toSunX = sunPoint.x - rig.camera.position.x;
+    const toSunY = sunPoint.y - rig.camera.position.y;
+    const toSunZ = sunPoint.z - rig.camera.position.z;
+    const inFront = toSunX * camForward.x + toSunY * camForward.y + toSunZ * camForward.z > 0;
+    if (!inFront) {
+      godRaysPass.enabled = false;
+      return;
+    }
+    sunPoint.project(rig.camera);
+    godRaysPass.enabled = true;
+    (godRaysPass.uniforms['uSunScreen']!['value'] as THREE.Vector2).set(
+      sunPoint.x * 0.5 + 0.5,
+      sunPoint.y * 0.5 + 0.5,
+    );
+    (godRaysPass.uniforms['uIntensity']!['value'] as number) = 0.10 + underwaterBlend * 0.8;
+    renderSunMask();
+  }
+
   function frame(now: number): void {
     if (!running) return;
     rafId = requestAnimationFrame(frame);
@@ -248,11 +319,16 @@ export function createRenderer(deps: RendererDeps): Renderer {
     const simT = clock.time();
     waveT = frozenWaveT ?? simT;
 
+    // 粒子/泡沫共同的时间基准：暂停/冻结波形时 Δt=0，重置回退钳 0，掉帧钳 0.25
+    let particleDt = waveT - lastParticleT;
+    if (particleDt < 0) particleDt = 0;
+    else particleDt = Math.min(particleDt, 0.25);
+    lastParticleT = waveT;
+
     // 2. 波面 uniform（唯一数据源：components()）
     const comps = waveField.components();
     packWaveComponents(pack, comps);
     const nextWorldSize = planWorldSize(comps);
-    ocean.update(pack, waveT, waveField.whitecapIntensity(), waveField.depth);
     if (Math.abs(nextWorldSize - worldSize) > 0.5) {
       worldSize = nextWorldSize;
       props.setReferenceExtent(worldSize);
@@ -260,16 +336,17 @@ export function createRenderer(deps: RendererDeps): Renderer {
     }
     ocean.setWorldSize(worldSize);
 
+    // 2.5 泡沫积累缓冲（雅可比/白帽注入 + 衰减 + 风漂）→ 海面片元采样
+    const wind = windOf(state);
+    foam.update(particleDt, waveT, waveField.whitecapIntensity(), wind.dirDeg, worldSize, pack);
+    ocean.update(pack, waveT, waveField.whitecapIntensity(), waveField.depth, foam.texture);
+
     // 3. 剖面波形曲线（真实 evalSurface 采样）
     props.updateProfileLine(worldSize, (py) => waveField.evalSurface(0, py, waveT).eta);
 
     // 4. 浪花粒子：出生（真实波陡/白帽强度/风速）→ 积分 → 上传
     //    粒子时间与波面时间（waveT）同步：暂停/冻结波形时 Δt = 0，粒子定格、
     //    不再从冻结波峰出生；2x 倍速下波形与粒子同为 2 倍速，全屏一套仿真时间。
-    let particleDt = waveT - lastParticleT;
-    if (particleDt < 0) particleDt = 0; // 时钟回退（重置）：切换到新时间基重新计步
-    else particleDt = Math.min(particleDt, 0.25); // 掉帧/解冻跳变防大步
-    lastParticleT = waveT;
     if (particleDt > 0) {
       for (let i = 0; i < WHITECAP_ATTEMPTS_PER_FRAME; i++) emitAtSea(Math.random, false);
       for (let i = 0; i < SPRAY_ATTEMPTS_PER_FRAME; i++) emitAtSea(Math.random, true);
@@ -310,6 +387,9 @@ export function createRenderer(deps: RendererDeps): Renderer {
     marineSnow.update(waveT, underwaterBlend, pixelScale);
     underwaterPass.update(underwaterBlend, waveT);
 
+    // 8.5 体积光：波面遮挡遮罩 + 径向模糊合成（强度随水下过渡增强）
+    updateGodRays();
+
     composer.render();
   }
 
@@ -335,6 +415,10 @@ export function createRenderer(deps: RendererDeps): Renderer {
     const h = container.clientHeight || 1;
     threeRenderer.setSize(w, h);
     composer.setSize(w, h);
+    maskRT.setSize(
+      Math.max(2, Math.floor(w * MASK_SCALE)),
+      Math.max(2, Math.floor(h * MASK_SCALE)),
+    );
     rig.camera.aspect = w / h;
     rig.camera.updateProjectionMatrix();
   };
@@ -383,6 +467,10 @@ export function createRenderer(deps: RendererDeps): Renderer {
       whitecapField.dispose();
       sprayField.dispose();
       marineSnow.dispose();
+      foam.dispose();
+      maskRT.dispose();
+      sunMaskMaterial.dispose();
+      blackOccluder.dispose();
       tracer.dispose();
       props.dispose();
       scene.remove(rig.camera, ocean.mesh, sky.mesh, whitecapField.points, sprayField.points, marineSnow.points, tracer.group, props.group, dirLight, hemiLight);

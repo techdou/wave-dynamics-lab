@@ -63,6 +63,8 @@ uniform vec3 uShallowColor;
 uniform vec3 uDeepColor;
 uniform vec3 uSkyHorizon;
 uniform vec3 uSkyZenith;
+uniform sampler2D uFoamTex;
+uniform float uFoamWorldSize;
 varying vec3 vWorldPos;
 #include <fog_pars_fragment>
 
@@ -132,12 +134,6 @@ void main() {
   waterCol *= mix(0.7, 1.15, clamp(n.y, 0.0, 1.0)); // 波面朝向增减光
   vec3 above = mix(waterCol, skyRef, fres) + uSunColor * spec * 1.4;
 
-  // 浪尖透光（SSS 近似）：逆光时太阳穿过波峰，波体散射出青绿光——真实海浪
-  // 最具辨识度的质感之一。参考 abyssal-ocean（MIT）backLit 分支，按本项目
-  // uniforms/峰值归一化本地化：peakNorm 加权波峰，视线与太阳反向时最强。
-  float backLit = pow(max(dot(V, -L), 0.0), 3.0) * peakNorm;
-  above += vec3(0.10, 0.42, 0.36) * backLit * 0.55;
-
   // ---- 水下仰视（背面）----
   vec3 under = mix(uShallowColor * 1.6, uDeepColor * 1.1, depthMix * 0.6);
   under += uSkyHorizon * 0.18 * clamp(dot(n, V) * -1.0, 0.0, 1.0); // 波底透天光
@@ -154,10 +150,22 @@ void main() {
 
   // ---- 泡沫：波陡 + 雅可比拥挤 + 白帽强度（波峰加权）----
   float peakNorm = clamp(h / ampSum * 0.5 + 0.5, 0.0, 1.0);
+
+  // 浪尖透光（SSS 近似）：逆光时太阳穿过波峰，波体散射出青绿光——真实海浪
+  // 最具辨识度的质感之一。参考 abyssal-ocean（MIT）backLit 分支，按本项目
+  // uniforms/峰值归一化本地化：peakNorm 加权波峰，视线与太阳反向时最强。
+  float backLit = pow(max(dot(V, -L), 0.0), 3.0) * peakNorm;
+  above += vec3(0.10, 0.42, 0.36) * backLit * 0.55;
+
   float foamSteep = smoothstep(0.42, 0.9, steepness) * 0.55;
   float foamJac = smoothstep(0.88, 0.25, jac) * 0.8;
   float whitecap = peakNorm * uWhitecap * smoothstep(0.45, 0.85, peakNorm + steepness * 0.4);
-  float foam = clamp(max(foamSteep + foamJac, whitecap), 0.0, 1.0);
+  // 泡沫包络：时间积累缓冲（雅可比/白帽注入 + 指数衰减 + 风漂，波峰掠过后
+  // 余沫留存数秒）为主，瞬时阈值保留 0.7 权重作细节兜底。
+  float foamInst = clamp(max(foamSteep + foamJac, whitecap), 0.0, 1.0);
+  vec2 foamUv = vWorldPos.xz / uFoamWorldSize + 0.5;
+  float foamAcc = texture2D(uFoamTex, foamUv).r;
+  float foam = clamp(max(foamInst * 0.7, foamAcc), 0.0, 1.0);
   foam *= 0.55 + 0.45 * valueNoise(vWorldPos.xz * 0.9 + vec2(uTime * 0.15));
   foam *= aboveSurface ? 1.0 : 0.45;
   vec3 foamCol = vec3(0.93, 0.97, 0.98);
