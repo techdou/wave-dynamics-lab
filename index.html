@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>海水运动的基本方程——海浪动力学虚拟探索实验</title>
+  </head>
+  <body>
+    <div id="app">
+      <!-- 3D 视口：铺满全屏底层，所有面板以悬浮层叠加其上（见 docs/SPEC.md §15） -->
+      <div id="viewport" aria-label="三维海面视口"></div>
+
+      <!-- 顶栏：章节 / 实验切换 / 任务进度 / 视角 -->
+      <header id="topbar" class="panel-surface">
+        <h1 class="app-title">
+          海水运动的基本方程<span>海浪动力学虚拟探索实验</span>
+        </h1>
+        <nav id="experiment-tabs" aria-label="实验切换">
+          <button type="button" data-experiment="wind">实验一 · 风浪生成机制</button>
+          <button type="button" data-experiment="interference">实验二 · 双造波机叠加</button>
+          <button type="button" data-experiment="spectrum">实验三 · 不规则随机海况</button>
+        </nav>
+        <div id="task-progress" aria-label="任务进度"></div>
+        <div id="view-switch" aria-label="视角切换"></div>
+      </header>
+
+      <!-- 左栏：科研任务卡 -->
+      <aside id="left-panel" class="panel-surface" aria-label="科研任务"></aside>
+
+      <!-- 右栏：参数 / 仪器 / 数据 -->
+      <aside id="right-panel" class="panel-surface" aria-label="参数与仪器"></aside>
+
+      <!-- 底栏：暂停 / 倍速 / 重置 -->
+      <footer id="bottom-bar" class="panel-surface" aria-label="播放控制"></footer>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

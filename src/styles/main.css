@@ -1,0 +1,1045 @@
+/* ============================================================
+   海浪动力学虚拟探索实验 · 基础样式骨架
+   视觉规范权威定义见 docs/SPEC.md §15。
+   本文件提供：设计令牌（CSS 变量）+ 全屏 overlay 布局骨架。
+   UI 工程师在此基础上扩展组件样式，禁止引入 UI 框架。
+   ============================================================ */
+
+:root {
+  /* 深海青绿色系（禁止 #3B82F6 及一切紫色调，见 SPEC §15） */
+  --c-bg-deep: #041f22;      /* 页面底色：深海夜青 */
+  --c-bg-panel: rgba(6, 42, 46, 0.85);  /* 悬浮面板：半透明深青 */
+  --c-primary: #7fd4c1;      /* 主色：青绿 */
+  --c-secondary: #5ac8e8;    /* 次色：青蓝 */
+  --c-warning: #f2b662;      /* 警示/强调：琥珀 */
+  --c-text: #e8f5f1;         /* 主文字 */
+  --c-text-dim: #9dc3bc;     /* 次文字 */
+  --c-border: rgba(127, 212, 193, 0.18);
+
+  /* 阴影克制：仅浮层（模态/下拉/底栏胶囊）允许，面板一律用描边 */
+  --shadow-float: 0 8px 24px rgba(0, 0, 0, 0.35);
+
+  --font-ui: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", Consolas, monospace;
+
+  --radius-panel: 10px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-ui);
+  background: var(--c-bg-deep);
+  color: var(--c-text);
+  font-size: 14px;
+}
+
+#app {
+  position: relative;
+}
+
+/* 3D 视口铺满全屏底层 */
+#viewport {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+/* 悬浮面板通用外观：描边 + 毛玻璃，不加阴影 */
+.panel-surface {
+  position: absolute;
+  z-index: 10;
+  background: var(--c-bg-panel);
+  border: 1px solid var(--c-border);
+  backdrop-filter: blur(8px);
+  border-radius: var(--radius-panel);
+}
+
+/* 顶栏 */
+#topbar {
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+}
+
+.app-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--c-primary);
+  white-space: nowrap;
+}
+
+.app-title span {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--c-text-dim);
+}
+
+#experiment-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+#task-progress,
+#view-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* 左右悬浮栏 */
+#left-panel {
+  top: 56px;
+  left: 8px;
+  bottom: 64px;
+  width: 260px;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+#right-panel {
+  top: 56px;
+  right: 8px;
+  bottom: 64px;
+  width: 300px;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+/* 底栏：居中胶囊，唯一允许阴影的控制条 */
+#bottom-bar {
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 20px;
+  border-radius: 24px;
+  box-shadow: var(--shadow-float);
+}
+
+button {
+  font-family: inherit;
+  color: var(--c-text);
+  background: rgba(127, 212, 193, 0.08);
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: rgba(127, 212, 193, 0.18);
+}
+
+button[aria-pressed='true'],
+button.active {
+  background: var(--c-primary);
+  color: #04252a;
+  border-color: var(--c-primary);
+}
+
+/* ============================================================
+   组件样式（UI 工程师扩展区）—— 设计令牌以上方 :root 为准，不改值
+   布局模型：3D 视口铺满底层，五区面板悬浮叠加；折叠态由
+   body[data-ui-mode] + 面板 .is-collapsed 驱动（与 JS 状态机单一来源同步）
+   ============================================================ */
+
+:root {
+  color-scheme: dark;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.ui-spacer {
+  flex: 1 1 auto;
+}
+
+.ui-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 按钮语气变体 ---------- */
+.ui-btn--primary {
+  background: var(--c-primary);
+  border-color: var(--c-primary);
+  color: #04252a;
+}
+
+.ui-btn--ghost {
+  background: transparent;
+}
+
+.ui-btn--danger {
+  background: var(--c-warning);
+  border-color: var(--c-warning);
+  color: #3a2a10;
+}
+
+.ui-btn--primary:hover,
+.ui-btn--danger:hover {
+  filter: brightness(1.06);
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+  outline: 1px solid var(--c-secondary);
+  outline-offset: 1px;
+}
+
+/* ---------- 面板头 ---------- */
+.ui-panelbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -12px -12px 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--c-border);
+}
+
+.ui-panelbar__title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--c-primary);
+  white-space: nowrap;
+}
+
+.ui-btn-collapse {
+  padding: 2px 9px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--c-text-dim);
+}
+
+.ui-badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  border: 1px solid var(--c-border);
+  color: var(--c-text-dim);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.ui-badge.is-done {
+  color: #04252a;
+  background: var(--c-primary);
+  border-color: var(--c-primary);
+}
+
+/* ---------- 顶栏 ---------- */
+#topbar {
+  gap: 12px;
+}
+
+#view-switch {
+  margin-left: 0;
+}
+
+.ui-tab-exp {
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 13px;
+  color: var(--c-text-dim);
+  white-space: nowrap;
+}
+
+.ui-tab-exp .ui-tab-desc {
+  margin-left: 6px;
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.ui-tab-exp.is-active {
+  background: var(--c-primary);
+  color: #04252a;
+  border-color: var(--c-primary);
+}
+
+.ui-btn-view {
+  min-width: 44px;
+  text-align: center;
+  font-size: 13px;
+}
+
+.ui-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1px solid rgba(157, 195, 188, 0.5);
+}
+
+.ui-dot.is-done {
+  background: var(--c-primary);
+  border-color: var(--c-primary);
+}
+
+.ui-dot.is-current {
+  outline: 1px solid rgba(242, 182, 98, 0.65);
+  outline-offset: 2px;
+}
+
+/* ---------- 左栏任务区 ---------- */
+/* 静态摘要任务卡已移除：任务交互面板（src/tasks/taskPanel.ts，自带 wlab-tk- 样式）
+   由 main.ts 挂入 .ui-task-loop-host 宿主，此处只负责宿主的滚动容器行为。 */
+.ui-task-loop-host {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 任务语音/配图按钮沿用原视觉（宿主内由 taskPanel 的 wlab-tk- 类自绘） */
+.ui-btn-voice {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: 4px 10px;
+  background: rgba(127, 212, 193, 0.12);
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  color: var(--c-primary);
+}
+
+.ui-btn-voice:hover {
+  background: rgba(127, 212, 193, 0.22);
+}
+
+/* ---------- 右栏 tab ---------- */
+.ui-tabs {
+  gap: 2px;
+  padding: 0 8px;
+}
+
+.ui-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 6px 6px 0 0;
+  padding: 10px 10px 8px;
+  font-size: 13px;
+  color: var(--c-text-dim);
+}
+
+.ui-tab:hover {
+  color: var(--c-text);
+  background: rgba(127, 212, 193, 0.06);
+}
+
+.ui-tab.is-active {
+  color: var(--c-primary);
+  border-bottom-color: var(--c-primary);
+  background: rgba(127, 212, 193, 0.08);
+}
+
+.ui-tabpage {
+  display: none;
+}
+
+.ui-tabpage.is-active {
+  display: block;
+}
+
+/* ---------- 参数字段 ---------- */
+.ui-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--c-secondary);
+  letter-spacing: 0.08em;
+  margin: 14px 0 8px;
+}
+
+.ui-field {
+  margin-bottom: 12px;
+}
+
+.ui-field__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ui-field__label {
+  font-size: 12px;
+  color: var(--c-text-dim);
+}
+
+.ui-hint {
+  display: block;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--c-text-dim);
+  opacity: 0.75;
+  margin-top: 3px;
+}
+
+.ui-num {
+  width: 84px;
+  background: rgba(4, 31, 34, 0.6);
+  border: 1px solid var(--c-border);
+  border-radius: 5px;
+  color: var(--c-text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 3px 6px;
+  text-align: right;
+}
+
+.ui-select {
+  max-width: 172px;
+  background: rgba(4, 31, 34, 0.6);
+  border: 1px solid var(--c-border);
+  border-radius: 5px;
+  color: var(--c-text);
+  font-size: 12px;
+  padding: 3px 6px;
+}
+
+.ui-range {
+  width: 100%;
+  height: 20px;
+  margin-top: 4px;
+  accent-color: var(--c-primary);
+  cursor: pointer;
+}
+
+.ui-field--checkbox .ui-field__row {
+  justify-content: flex-start;
+  cursor: pointer;
+}
+
+.ui-check {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--c-primary);
+  cursor: pointer;
+}
+
+/* ---------- 仪器 ---------- */
+/* 切换按钮由仪器模块面板渲染（instruments/runtime.ts），壳层不重复出按钮 */
+
+.ui-mystery-note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--c-warning);
+  border: 1px solid rgba(242, 182, 98, 0.45);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+}
+
+/* ---------- 数据页 ---------- */
+.ui-probe {
+  font-size: 12px;
+  color: var(--c-text-dim);
+  margin-bottom: 8px;
+}
+
+.ui-slot {
+  min-height: 96px;
+  border: 1px dashed var(--c-border);
+  border-radius: 8px;
+  padding: 6px;
+  margin-bottom: 6px;
+}
+
+.ui-slot:empty::before {
+  content: '待对应模块挂载';
+  font-size: 11px;
+  color: var(--c-text-dim);
+  opacity: 0.6;
+}
+
+.ui-measures {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.ui-measure {
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.ui-measure__head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--c-text-dim);
+}
+
+.ui-measure__tool {
+  color: var(--c-primary);
+}
+
+.ui-measure__values {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.ui-empty {
+  font-size: 12px;
+  color: var(--c-text-dim);
+  border: 1px dashed var(--c-border);
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.ui-model-note {
+  margin-top: 12px;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.ui-model-note summary {
+  cursor: pointer;
+  color: var(--c-secondary);
+  user-select: none;
+}
+
+.ui-model-note table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-size: 11px;
+}
+
+.ui-model-note th,
+.ui-model-note td {
+  text-align: left;
+  padding: 3px 6px;
+  border-bottom: 1px dashed var(--c-border);
+  vertical-align: top;
+  color: var(--c-text-dim);
+}
+
+.ui-model-note th {
+  color: var(--c-text);
+  font-weight: 600;
+}
+
+/* ---------- 底栏 ---------- */
+.ui-playback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.ui-btn-scale {
+  font-family: var(--font-mono);
+  min-width: 36px;
+  text-align: center;
+}
+
+.ui-btn-scale.is-active {
+  background: var(--c-primary);
+  color: #04252a;
+  border-color: var(--c-primary);
+}
+
+.ui-sim-time {
+  font-size: 12px;
+  color: var(--c-text-dim);
+  white-space: nowrap;
+}
+
+.ui-sim-time .ui-mono {
+  color: var(--c-text);
+  font-size: 13px;
+}
+
+/* ---------- 学习资源浮窗（浮层，允许阴影） ---------- */
+.ui-media {
+  position: fixed;
+  right: 16px;
+  bottom: 68px;
+  z-index: 14;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.ui-media__win {
+  width: 320px;
+  max-height: min(480px, 60vh);
+  display: flex;
+  flex-direction: column;
+  background: var(--c-bg-panel);
+  border: 1px solid var(--c-border);
+  backdrop-filter: blur(8px);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-float);
+  overflow: hidden;
+}
+
+.ui-media__win .ui-panelbar {
+  margin: 0;
+  padding: 8px 10px;
+}
+
+.ui-media__body {
+  min-height: 140px;
+  max-height: calc(min(480px, 60vh) - 40px);
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.ui-media__launcher {
+  display: none;
+  padding: 8px 14px;
+  border-radius: 20px;
+  background: var(--c-bg-panel);
+  border: 1px solid var(--c-border);
+  color: var(--c-primary);
+  font-size: 13px;
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-float);
+}
+
+.ui-media.is-collapsed .ui-media__win {
+  display: none;
+}
+
+.ui-media.is-collapsed .ui-media__launcher {
+  display: inline-block;
+}
+
+/* ---------- 折叠后的边缘唤起钮 ---------- */
+.ui-rail {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 11;
+  writing-mode: vertical-rl;
+  letter-spacing: 0.3em;
+  padding: 16px 6px;
+  font-size: 12px;
+  color: var(--c-text-dim);
+  background: var(--c-bg-panel);
+  border: 1px solid var(--c-border);
+  backdrop-filter: blur(8px);
+}
+
+.ui-rail:hover {
+  color: var(--c-primary);
+}
+
+.ui-rail--left {
+  left: 0;
+  border-radius: 0 8px 8px 0;
+  border-left: none;
+}
+
+.ui-rail--right {
+  right: 0;
+  border-radius: 8px 0 0 8px;
+  border-right: none;
+}
+
+/* ---------- 面板折叠动画 ---------- */
+#left-panel,
+#right-panel {
+  transition: transform 0.25s ease, opacity 0.25s ease;
+}
+
+#left-panel.is-collapsed {
+  transform: translateX(calc(-100% - 10px));
+}
+
+#right-panel.is-collapsed {
+  transform: translateX(calc(100% + 10px));
+}
+
+#left-panel.is-collapsed,
+#right-panel.is-collapsed {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ---------- 滚动条 ---------- */
+#left-panel::-webkit-scrollbar,
+#right-panel::-webkit-scrollbar,
+.ui-media__body::-webkit-scrollbar {
+  width: 6px;
+}
+
+#left-panel::-webkit-scrollbar-thumb,
+#right-panel::-webkit-scrollbar-thumb,
+.ui-media__body::-webkit-scrollbar-thumb {
+  background: rgba(127, 212, 193, 0.25);
+  border-radius: 3px;
+}
+
+/* ---------- 响应式（断点唯一来源：ui/logic/breakpoints.ts） ---------- */
+[data-ui-mode='medium'] .app-title span,
+[data-ui-mode='compact'] .app-title span {
+  display: none;
+}
+
+[data-ui-mode='medium'] .ui-tab-desc,
+[data-ui-mode='compact'] .ui-tab-desc {
+  display: none;
+}
+
+[data-ui-mode='compact'] #topbar {
+  gap: 8px;
+  padding: 0 10px;
+}
+
+[data-ui-mode='compact'] #left-panel {
+  width: min(320px, 88vw);
+}
+
+[data-ui-mode='compact'] #right-panel {
+  width: min(340px, 90vw);
+}
+
+[data-ui-mode='compact'] #bottom-bar {
+  height: 40px;
+  gap: 8px;
+  padding: 0 12px;
+  bottom: 6px;
+}
+
+[data-ui-mode='compact'] .ui-btn-report {
+  font-size: 12px;
+  padding: 3px 8px;
+}
+
+/* ---------- toast ---------- */
+.ui-toast-stack {
+  position: fixed;
+  left: 50%;
+  bottom: 68px;
+  transform: translateX(-50%);
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.ui-toast {
+  max-width: min(420px, 86vw);
+  font-size: 13px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: rgba(6, 42, 46, 0.92);
+  border: 1px solid var(--c-border);
+  color: var(--c-text);
+  backdrop-filter: blur(8px);
+  animation: ui-toast-in 0.22s ease;
+}
+
+.ui-toast--warn {
+  border-color: rgba(242, 182, 98, 0.6);
+  color: var(--c-warning);
+}
+
+.ui-toast--success {
+  border-color: var(--c-primary);
+}
+
+.ui-toast.is-leaving {
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.24s ease, transform 0.24s ease;
+}
+
+@keyframes ui-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------- 模态（浮层，允许阴影） ---------- */
+.ui-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 16, 18, 0.62);
+  backdrop-filter: blur(2px);
+}
+
+.ui-modal {
+  width: min(420px, 90vw);
+  background: var(--c-bg-panel);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-panel);
+  padding: 18px;
+  box-shadow: var(--shadow-float);
+}
+
+.ui-modal__title {
+  font-size: 15px;
+  margin-bottom: 8px;
+  color: var(--c-text);
+}
+
+.ui-modal__message {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--c-text-dim);
+}
+
+.ui-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* ---------- 启动加载态 ---------- */
+.ui-boot {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--c-bg-deep);
+}
+
+.ui-boot__inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.ui-boot__spinner {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 2px solid rgba(127, 212, 193, 0.25);
+  border-top-color: var(--c-primary);
+  animation: ui-spin 1s linear infinite;
+}
+
+.ui-boot__title {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--c-primary);
+}
+
+.ui-boot__subtitle {
+  font-size: 13px;
+  color: var(--c-text-dim);
+}
+
+.ui-boot__status {
+  font-size: 12px;
+  color: var(--c-text-dim);
+  opacity: 0.8;
+  font-family: var(--font-mono);
+}
+
+@keyframes ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- WebGL 降级说明页 ---------- */
+.ui-webgl-fallback {
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--c-bg-deep);
+}
+
+.ui-webgl__inner {
+  width: min(520px, 90vw);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-panel);
+  padding: 28px;
+}
+
+.ui-webgl__title {
+  font-size: 18px;
+  color: var(--c-warning);
+  margin-bottom: 10px;
+}
+
+.ui-webgl__cause,
+.ui-webgl__list-title {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--c-text-dim);
+  margin-bottom: 8px;
+}
+
+.ui-webgl__list {
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--c-text);
+  padding-left: 20px;
+  margin-bottom: 16px;
+}
+
+/* ---------- 预生成素材接入（知识点语音按钮 / 开场浮层） ---------- */
+.ui-media__list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.ui-media__list .ui-btn-voice {
+  text-align: left;
+  font-size: 12px;
+}
+
+.ui-intro {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #041f22;
+}
+
+.ui-intro__video {
+  width: min(960px, 92vw);
+  max-height: 82vh;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-panel);
+  background: #02141a;
+  box-shadow: var(--shadow-float);
+}
+
+.ui-intro__skip {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  padding: 8px 16px;
+  border-radius: 20px;
+  background: var(--c-bg-panel);
+  border: 1px solid var(--c-border);
+  color: var(--c-primary);
+  font-size: 13px;
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-float);
+}
+
+/* ---------- 动效减弱 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ========== 学习资源浮窗：素材分组（语音教程 / 实拍案例 / 图鉴） ========== */
+
+.ui-media__group {
+  margin: 4px 0 10px;
+}
+
+.ui-media__group-title {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--c-primary);
+  opacity: 0.85;
+}
+
+/* ========== 案例视频 / 海况图鉴浮层（复用 ui-intro 底、带标题栏） ========== */
+
+.ui-caseview {
+  flex-direction: column;
+  gap: 10px;
+  padding: 24px;
+}
+
+.ui-caseview__bar {
+  width: min(880px, 92vw);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ui-caseview__title {
+  font-size: 14px;
+  color: #e8f5f1;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+
+.ui-caseview__video {
+  width: min(880px, 92vw);
+  max-height: 74vh;
+  border-radius: 10px;
+  border: 1px solid var(--c-border);
+  background: #000;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.55);
+}
+
+.ui-caseview__img {
+  display: block;
+  width: min(880px, 92vw);
+  max-height: 74vh;
+  object-fit: contain;
+  border-radius: 10px;
+  border: 1px solid var(--c-border);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.55);
+}
