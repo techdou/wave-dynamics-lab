@@ -62,12 +62,14 @@ import {
   taskCaseImageSrc,
   taskVoiceSrc,
 } from './ui/media';
-import type { ExperimentId } from './core/types';
+import type { ExperimentId, QualityLevel } from './core/types';
+import { persistQuality, readPersistedQuality } from './ui/logic/quality';
 
 /** DOM 事件名（ui.ts 派发，见其文件头说明；常量未导出，此处按文档镜像） */
 const UI_EVENT_RESET = 'wave:reset-request';
 const UI_EVENT_REPORT = 'wave:report-export';
 const UI_EVENT_SHARE = 'wave:share-card';
+const UI_EVENT_QUALITY = 'wave:quality-change';
 
 const EXPERIMENT_NAMES: Record<ExperimentId, string> = {
   wind: '实验一 · 风浪生成机制',
@@ -137,7 +139,17 @@ function main(): void {
     showToast('三维渲染不可用，已显示原因与自助解法；其余功能继续可用', 'warn', 6000);
   } else {
     renderer = initStep('三维渲染', () =>
-      createRenderer({ container: requireElement('viewport'), store, waveField, clock }),
+      createRenderer({
+        container: requireElement('viewport'),
+        store,
+        waveField,
+        clock,
+        quality: readPersistedQuality() ?? 'high',
+        onAutoDowngrade: () => {
+          ui.setQualityLevel('low');
+          showToast('检测到设备性能有限，已自动切换流畅模式', 'info');
+        },
+      }),
     );
   }
 
@@ -218,6 +230,15 @@ function main(): void {
     experiments?.reset();
   });
 
+  // 底栏：画质开关（低配模式）——UI 派发目标档 → renderer 切换 + 持久化 + 回写按钮
+  slots.playbackBar.addEventListener(UI_EVENT_QUALITY, (event) => {
+    const detail = (event as CustomEvent).detail as { level: QualityLevel } | undefined;
+    const level = detail?.level ?? 'high';
+    renderer?.setQuality(level);
+    persistQuality(level);
+    ui.setQualityLevel(level);
+  });
+
   // 底栏：报告导出 → 数据层生成并下载
   slots.playbackBar.addEventListener(UI_EVENT_REPORT, () => {
     if (!report) {
@@ -286,6 +307,7 @@ function main(): void {
   // ---------- 挂载（壳层 → 各面板 → 启动帧驱动） ----------
   setBootStatus('正在挂载界面…');
   ui.mount();
+  ui.setQualityLevel(readPersistedQuality() ?? 'high'); // 初始档位回写按钮态（持久化 low 时）
   // 交互任务面板挂在「科研任务」面板内部（slots.taskCards 宿主），不再
   // 追加到 layout.left 末尾——原静态摘要卡已移除，此处是唯一任务卡实现。
   if (taskLoopBox) slots.taskCards.appendChild(taskLoopBox);

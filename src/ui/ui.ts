@@ -49,6 +49,7 @@ import type {
   TaskProgress,
   TimeScale,
   ViewKind,
+  QualityLevel,
 } from '../core/types';
 import { computeLayoutMode } from './logic/breakpoints';
 import type { LayoutMode } from './logic/breakpoints';
@@ -75,6 +76,7 @@ import {
   showGalleryImage,
   showIntroOverlay,
 } from './media';
+import { toggleQuality } from './logic/quality';
 
 /** 五区布局容器（集成工程师从 index.html 取 DOM 后注入） */
 export interface UILayout {
@@ -111,12 +113,16 @@ export interface UI {
   /** 返回功能面板挂载点（mount 后调用） */
   getSlots(): UIResourceSlots;
   dispose(): void;
+  /** 回写画质档位显示（底栏按钮态；事件接线与自动降档后由集成工程师调用） */
+  setQualityLevel(level: QualityLevel): void;
 }
 
 // ========== 常量（展示层文案与顺序） ==========
 
 /** 本模块定义的 DOM CustomEvent 名（供集成工程师接线，见文件头说明） */
 const UI_EVENT_RESET = 'wave:reset-request';
+/** 底栏画质开关（低配模式）：detail { level: QualityLevel }，集成工程师调 renderer.setQuality */
+const UI_EVENT_QUALITY = 'wave:quality-change';
 const UI_EVENT_REPORT = 'wave:report-export';
 const UI_EVENT_SHARE = 'wave:share-card';
 
@@ -516,7 +522,18 @@ export function createUI(deps: UIDeps): UI {
       dispatchUiEvent(playbackBar, UI_EVENT_SHARE, { experiment: store.getState().experiment });
     });
 
-    playbackBar.append(btnPause, btnScale1, btnScale2, btnReset, timeBox, btnReport, btnShare);
+    const btnQuality = document.createElement('button');
+    btnQuality.type = 'button';
+    btnQuality.className = 'ui-btn-quality';
+    btnQuality.textContent = '流畅模式';
+    btnQuality.title = '切换到流畅模式（降低画质提升帧率，物理与读数不变）';
+    btnQuality.setAttribute('aria-pressed', 'false');
+    btnQuality.addEventListener('click', () => {
+      const next = toggleQuality(qualityLevel);
+      dispatchUiEvent(playbackBar, UI_EVENT_QUALITY, { level: next });
+    });
+
+    playbackBar.append(btnPause, btnScale1, btnScale2, btnReset, timeBox, btnQuality, btnReport, btnShare);
     layout.bottom.append(playbackBar);
 
     // ---------- 学习资源浮窗（右下角呼出：知识点语音 + 开场短片重看） ----------
@@ -1096,5 +1113,21 @@ export function createUI(deps: UIDeps): UI {
     document.body.removeAttribute('data-ui-mode');
   }
 
-  return { mount, getSlots, dispose };
+  // ---------- 画质档位（低配模式）----------
+  let qualityLevel: QualityLevel = 'high';
+  /** 回写画质档位显示（底栏按钮态）。按钮在 mount 时创建，mount 后调用有效；
+   *  自动降档与事件接线后由集成工程师调用，保证按钮态单一来源。 */
+  function setQualityLevel(level: QualityLevel): void {
+    qualityLevel = level;
+    const btn = playbackBar.querySelector<HTMLButtonElement>('.ui-btn-quality');
+    if (!btn) return;
+    // 按钮显示"可切换到的目标档"
+    btn.textContent = level === 'high' ? '流畅模式' : '高画质';
+    btn.title = level === 'high'
+      ? '切换到流畅模式（降低画质提升帧率，物理与读数不变）'
+      : '切换到高画质模式';
+    btn.setAttribute('aria-pressed', String(level === 'low'));
+  }
+
+  return { mount, getSlots, dispose, setQualityLevel };
 }

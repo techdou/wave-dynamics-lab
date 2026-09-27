@@ -12,7 +12,8 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import type { SimClock } from '../core/clock';
 import type { Store } from '../core/store';
-import type { SimState, ViewKind } from '../core/types';
+import type { QualityLevel, SimState, ViewKind } from '../core/types';
+import { shouldAutoDowngrade } from './logic/quality';
 import type { WaveField } from '../physics/waveField';
 import { createCameraRig } from './cameraRig';
 import { createOceanSurface } from './oceanSurface';
@@ -46,11 +47,17 @@ export interface RendererDeps {
   store: Store<SimState>;
   waveField: WaveField;
   clock: SimClock;
+  /** 初始画质档位（缺省 high；UI 侧持久化选择由集成工程师传入） */
+  quality?: QualityLevel;
+  /** FPS 自适应自动降档（high→low，只降不升）时回调（UI 提示与按钮态回写） */
+  onAutoDowngrade?: () => void;
 }
 
 export interface Renderer {
   /** 启动 requestAnimationFrame 主循环（每帧 clock.advance + 重建波面 + 渲染） */
   start(): void;
+  /** 切换画质档位（低配：像素比 1、关后处理增强、泡沫隔帧；物理与读数不变） */
+  setQuality(level: QualityLevel): void;
   /** 切换视角（sea-surface / side-section / underwater），自行订阅 store 亦可 */
   setView(view: ViewKind): void;
   /** 停止循环并释放 GPU 资源 */
@@ -90,7 +97,7 @@ function waveMakerVisuals(state: SimState): WaveMakerVisual[] | null {
 }
 
 export function createRenderer(deps: RendererDeps): Renderer {
-  const { container, store, waveField, clock } = deps;
+  const { container, store, waveField, clock, onAutoDowngrade } = deps;
 
   // ---------- WebGL 基础 ----------
   const threeRenderer = new THREE.WebGLRenderer({ antialias: true });
@@ -200,6 +207,11 @@ export function createRenderer(deps: RendererDeps): Renderer {
   let started = false;
   let disposed = false;
   let lastFrame = 0;
+  let qualityLevel: QualityLevel = deps.quality ?? 'high';
+  let avgFrameMs = 16.7;
+  let simElapsed = 0;
+  let autoDowngraded = false;
+  let frameIndex = 0;
 
   props.setReferenceExtent(worldSize); // 初始参考线长度
 
@@ -310,8 +322,12 @@ export function createRenderer(deps: RendererDeps): Renderer {
   function frame(now: number): void {
     if (!running) return;
     rafId = requestAnimationFrame(frame);
-    const dt = Math.min((now - lastFrame) / 1000, 0.1);
+    const rawDtMs = now - lastFrame;
+    const dt = Math.min(rawDtMs / 1000, 0.1);
     lastFrame = now;
+    frameIndex++;
+    avgFrameMs = avgFrameMs * 0.95 + rawDtMs * 0.05;
+    simElapsed += dt;
 
     // 1. 推进仿真（onStep 内同步完成示踪采样）
     clock.advance(dt);
@@ -337,8 +353,11 @@ export function createRenderer(deps: RendererDeps): Renderer {
     ocean.setWorldSize(worldSize);
 
     // 2.5 泡沫积累缓冲（雅可比/白帽注入 + 衰减 + 风漂）→ 海面片元采样
+    //     低配档隔帧更新（泡沫时间常数 2.6s，30Hz 更新完全平滑）
     const wind = windOf(state);
-    foam.update(particleDt, waveT, waveField.whitecapIntensity(), wind.dirDeg, worldSize, pack);
+    if (qualityLevel !== 'low' || frameIndex % 2 === 0) {
+      foam.update(particleDt, waveT, waveField.whitecapIntensity(), wind.dirDeg, worldSize, pack);
+    }
     ocean.update(pack, waveT, waveField.whitecapIntensity(), waveField.depth, foam.texture);
 
     // 3. 剖面波形曲线（真实 evalSurface 采样）
@@ -385,12 +404,22 @@ export function createRenderer(deps: RendererDeps): Renderer {
     whitecapField.setPixelScale(pixelScale);
     sprayField.setPixelScale(pixelScale);
     marineSnow.update(waveT, underwaterBlend, pixelScale);
-    underwaterPass.update(underwaterBlend, waveT);
+    if (qualityLevel === 'high') {
+      underwaterPass.update(underwaterBlend, waveT);
 
-    // 8.5 体积光：波面遮挡遮罩 + 径向模糊合成（强度随水下过渡增强）
-    updateGodRays();
+      // 8.5 体积光：波面遮挡遮罩 + 径向模糊合成（强度随水下过渡增强）
+      //     低配跳过：遮罩需整帧重渲染海面几何，是隐藏的渲染大头
+      updateGodRays();
+    }
 
     composer.render();
+
+    // FPS 自适应：滑动平均帧时长超阈值 → 自动切流畅档（只降不升，防抖动）
+    if (shouldAutoDowngrade(avgFrameMs, qualityLevel, autoDowngraded, simElapsed)) {
+      autoDowngraded = true;
+      setQuality('low');
+      onAutoDowngrade?.();
+    }
   }
 
   // ---------- store / clock 订阅 ----------
@@ -408,6 +437,23 @@ export function createRenderer(deps: RendererDeps): Renderer {
   const unsubscribeStep = clock.onStep((simTime) => {
     tracer.sampleAll(simTime, waveField.particleOrbit);
   });
+
+  // ---------- 画质档位 ----------
+  function applyQuality(): void {
+    const low = qualityLevel === 'low';
+    threeRenderer.setPixelRatio(low ? 1 : Math.min(window.devicePixelRatio || 1, 2));
+    composer.setPixelRatio(threeRenderer.getPixelRatio());
+    composer.setSize(container.clientWidth || 1, container.clientHeight || 1);
+    bloomPass.enabled = !low;
+    underwaterPass.enabled = !low;
+    if (low) godRaysPass.enabled = false;
+  }
+
+  function setQuality(level: QualityLevel): void {
+    if (disposed || level === qualityLevel) return;
+    qualityLevel = level;
+    applyQuality();
+  }
 
   // ---------- 窗口事件 ----------
   const onResize = (): void => {
@@ -435,6 +481,8 @@ export function createRenderer(deps: RendererDeps): Renderer {
   window.addEventListener('resize', onResize);
   document.addEventListener('visibilitychange', onVisibility);
 
+  applyQuality(); // 初始档位生效（持久化传入 low 时像素比/后处理即降）
+
   return {
     start() {
       if (started || disposed) return;
@@ -443,6 +491,8 @@ export function createRenderer(deps: RendererDeps): Renderer {
       lastFrame = performance.now();
       rafId = requestAnimationFrame(frame);
     },
+
+    setQuality,
 
     setView(view) {
       if (disposed) return;

@@ -22,6 +22,9 @@ export type ExperimentId = 'wind' | 'interference' | 'spectrum';
 /** 三种视角 */
 export type ViewKind = 'sea-surface' | 'side-section' | 'underwater';
 
+/** 渲染画质档位：low 只削减视觉开销（像素比/后处理/泡沫更新频率），物理与读数不变 */
+export type QualityLevel = 'high' | 'low';
+
 /** 播放倍速（需求只要求 1x / 2x） */
 export type TimeScale = 1 | 2;
 
