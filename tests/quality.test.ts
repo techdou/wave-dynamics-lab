@@ -12,6 +12,11 @@ import {
   AUTO_DOWNGRADE_FRAME_MS,
   AUTO_DOWNGRADE_WARMUP_S,
   shouldAutoDowngrade,
+  nextRenderScale,
+  RENDER_SCALE_MIN,
+  RENDER_SCALE_MAX,
+  RENDER_SCALE_DOWN_MS,
+  RENDER_SCALE_UP_MS,
 } from '../src/render/logic/quality';
 
 type Store = { getItem(k: string): string | null; setItem(k: string, v: string): void; removeItem(k: string): void };
@@ -88,5 +93,33 @@ describe('render/logic/quality：自动降档判定', () => {
 
   it('低画质档永不触发', () => {
     expect(shouldAutoDowngrade(60, 'low', false, 10)).toBe(false);
+  });
+});
+
+// ========== 连续动态分辨率 nextRenderScale ==========
+describe('nextRenderScale（动态分辨率）', () => {
+  it('滞回区间内保持不变', () => {
+    // DOWN_MS=30 / UP_MS=15.5 之间为保持区
+    expect(nextRenderScale(0.8, (RENDER_SCALE_DOWN_MS + RENDER_SCALE_UP_MS) / 2)).toBeCloseTo(0.8);
+  });
+
+  it('帧时长超标按比例下调', () => {
+    const next = nextRenderScale(1.0, RENDER_SCALE_DOWN_MS + 10);
+    expect(next).toBeLessThan(1.0);
+    expect(next).toBeCloseTo(1.0 * 0.92);
+  });
+
+  it('帧时长充裕按比例上调', () => {
+    const next = nextRenderScale(0.8, RENDER_SCALE_UP_MS - 2);
+    expect(next).toBeCloseTo(0.8 * 1.04);
+  });
+
+  it('上调不超过上限、下调不破下限', () => {
+    expect(nextRenderScale(RENDER_SCALE_MAX, RENDER_SCALE_UP_MS - 2)).toBe(RENDER_SCALE_MAX);
+    for (let i = 0; i < 50; i++) {
+      const s = nextRenderScale(0.7, RENDER_SCALE_DOWN_MS + 100);
+      expect(s).toBeGreaterThanOrEqual(RENDER_SCALE_MIN);
+    }
+    expect(nextRenderScale(RENDER_SCALE_MIN, RENDER_SCALE_DOWN_MS + 100)).toBe(RENDER_SCALE_MIN);
   });
 });

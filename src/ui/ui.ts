@@ -681,6 +681,8 @@ export function createUI(deps: UIDeps): UI {
     const controlsByPath = new Map<string, ControlBundle>();
     let trailCheck: HTMLInputElement | null = null;
     let freezeCheck: HTMLInputElement | null = null;
+    let shallowCheck: HTMLInputElement | null = null;
+    let shallowDepthRange: HTMLInputElement | null = null;
 
     function labelWithUnit(field: ParamField): string {
       return field.unit ? `${field.label}（${field.unit}）` : field.label;
@@ -769,6 +771,37 @@ export function createUI(deps: UIDeps): UI {
       trailCheck = trail.input;
       freezeCheck = freeze.input;
       box.append(trail.row, freeze.row);
+
+      // 浅水可视化：海床 + 焦散光网 + 点击涟漪（纯视觉，不改物理与读数）
+      const shallow = checkRow('浅水海床（含焦散光网）', '显示可调水深的沙质海床与透射光网，水上俯视可透见水底');
+      shallow.input.addEventListener('change', () => setOverlay('shallowMode', shallow.input.checked));
+      const depthRow = el('div', { className: 'ui-field ui-field--slider' });
+      depthRow.append(
+        el(
+          'div',
+          { className: 'ui-field__row' },
+          el('span', { className: 'ui-field__label', text: '水深（m）' }),
+        ),
+      );
+      const depthRange = document.createElement('input');
+      depthRange.type = 'range';
+      depthRange.className = 'ui-range';
+      depthRange.min = '4';
+      depthRange.max = '30';
+      depthRange.step = '1';
+      depthRange.addEventListener('input', () => {
+        const v = Math.round(Number(depthRange.value));
+        setOverlay('shallowDepth', Number.isFinite(v) ? Math.min(30, Math.max(4, v)) : 12);
+      });
+      depthRow.append(depthRange);
+      const syncDepthEnabled = (): void => {
+        depthRange.disabled = !shallow.input.checked;
+      };
+      shallow.input.addEventListener('change', syncDepthEnabled);
+      shallowCheck = shallow.input;
+      shallowDepthRange = depthRange;
+      syncDepthEnabled();
+      box.append(shallow.row, depthRow);
       return box;
     }
 
@@ -832,7 +865,7 @@ export function createUI(deps: UIDeps): UI {
       store.emit(STORE_EVENTS.VIEW_CHANGED, view);
     }
 
-    function setOverlay(key: keyof OverlayState, value: boolean): void {
+    function setOverlay(key: keyof OverlayState, value: boolean | number): void {
       const current = store.getState().overlays;
       const next = { ...current, [key]: value } as OverlayState;
       store.setState({ overlays: next });
@@ -909,6 +942,11 @@ export function createUI(deps: UIDeps): UI {
     function syncOverlays(overlays: OverlayState): void {
       if (trailCheck) trailCheck.checked = overlays.showTrails;
       if (freezeCheck) freezeCheck.checked = overlays.freezeWaveform;
+      if (shallowCheck) shallowCheck.checked = overlays.shallowMode;
+      if (shallowDepthRange) {
+        shallowDepthRange.value = String(overlays.shallowDepth);
+        shallowDepthRange.disabled = !overlays.shallowMode;
+      }
     }
 
     function syncProbe(probe: { x: number; y: number }): void {

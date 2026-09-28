@@ -10,6 +10,18 @@ import type { WaveUniformPack } from './logic/uniforms';
 /** 深水无实测水深时的视觉默认深度（m） */
 export const VISUAL_DEFAULT_DEPTH = 80;
 
+/** 浅水可视化层入参（可选；缺省即深水纯物理态，见 renderer 编排） */
+export interface OceanShallowState {
+  causticsTex?: THREE.Texture | null;
+  causticsWorldSize?: number;
+  /** 浅水模式过渡权重 0..1 */
+  shallowMix?: number;
+  /** 浅水视觉水深（m） */
+  shallowDepth?: number;
+  rippleTex?: THREE.Texture | null;
+  rippleWorldSize?: number;
+}
+
 export interface OceanSurface {
   mesh: THREE.Mesh;
   /** 每帧同步 uniform（复用 pack 的 Float32Array 引用，无额外分配） */
@@ -19,6 +31,7 @@ export interface OceanSurface {
     whitecap: number,
     waterDepth: number,
     foamTex?: THREE.Texture | null,
+    shallow?: OceanShallowState,
   ): void;
   setWorldSize(size: number): void;
   dispose(): void;
@@ -65,6 +78,12 @@ export function createOceanSurface(): OceanSurface {
     uSkyZenith: { value: linearColor('#22343c') },
     uFoamTex: { value: EMPTY_FOAM },
     uFoamWorldSize: { value: 240 },
+    uCausticsTex: { value: EMPTY_FOAM },
+    uCausticsWorldSize: { value: 240 },
+    uShallowMix: { value: 0 },
+    uShallowDepth: { value: 12 },
+    uRippleTex: { value: EMPTY_FOAM },
+    uRippleWorldSize: { value: 0 },
   };
   const material = new THREE.ShaderMaterial({
     vertexShader: OCEAN_VERT,
@@ -79,7 +98,7 @@ export function createOceanSurface(): OceanSurface {
 
   return {
     mesh,
-    update(pack, waveTime, whitecap, waterDepth, foamTex) {
+    update(pack, waveTime, whitecap, waterDepth, foamTex, shallow) {
       // 直接引用 pack 的缓冲：packWaveComponents 每帧覆写同一 Float32Array
       uniforms.uAmp.value = pack.amp;
       uniforms.uKx.value = pack.kx;
@@ -94,6 +113,13 @@ export function createOceanSurface(): OceanSurface {
         ? waterDepth
         : VISUAL_DEFAULT_DEPTH;
       uniforms.uFoamTex.value = foamTex ?? EMPTY_FOAM;
+      // 浅水可视化层（可选；renderer 未传时保持深水默认，供纯逻辑测试路径）
+      uniforms.uCausticsTex.value = shallow?.causticsTex ?? EMPTY_FOAM;
+      uniforms.uCausticsWorldSize.value = shallow?.causticsWorldSize ?? 240;
+      uniforms.uShallowMix.value = shallow?.shallowMix ?? 0;
+      uniforms.uShallowDepth.value = shallow?.shallowDepth ?? 12;
+      uniforms.uRippleTex.value = shallow?.rippleTex ?? EMPTY_FOAM;
+      uniforms.uRippleWorldSize.value = shallow?.rippleWorldSize ?? 0;
     },
     setWorldSize(size) {
       uniforms.uWorldSize.value = size;

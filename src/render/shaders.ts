@@ -21,6 +21,37 @@ uniform int uCount;
 uniform float uTime;
 `;
 
+/** 值噪声公共片段（海面 / 海床共用；2-D hash + smooth 插值噪声） */
+export const NOISE_GLSL = /* glsl */ `
+float hash12(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+}
+float valueNoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = hash12(i);
+  float b = hash12(i + vec2(1.0, 0.0));
+  float c = hash12(i + vec2(0.0, 1.0));
+  float d = hash12(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+`;
+
+/** 程序化沙底调色（海床片元 / 海面透底近似共用；p 为场景世界 xz） */
+export const SAND_COLOR_GLSL = /* glsl */ `
+vec3 sandBase(vec2 p) {
+  float n1 = valueNoise(p * 0.35);
+  float n2 = valueNoise(p * 1.7 + vec2(31.7, 11.3));
+  // 沙纹：单向波纹条纹，相位受噪声扰动（天然海床的 ripple marks）
+  float ripple = sin(p.x * 0.9 + p.y * 0.22 + n2 * 6.0) * 0.5 + 0.5;
+  vec3 sand = mix(vec3(0.60, 0.53, 0.38), vec3(0.74, 0.67, 0.50), n1);
+  sand *= 0.82 + 0.30 * ripple * n2;
+  sand *= 0.90 + 0.20 * n2;
+  return sand;
+}
+`;
+
 export const OCEAN_VERT = /* glsl */ `
 ${WAVE_ARRAY_UNIFORMS_GLSL}
 uniform float uWorldSize;
@@ -65,22 +96,18 @@ uniform vec3 uSkyHorizon;
 uniform vec3 uSkyZenith;
 uniform sampler2D uFoamTex;
 uniform float uFoamWorldSize;
+// 浅水可视化（overlays.shallowMode，纯视觉层）
+uniform sampler2D uCausticsTex;
+uniform float uCausticsWorldSize;
+uniform float uShallowMix;   // 0..1 模式过渡权重
+uniform float uShallowDepth; // 浅水视觉水深（m）
+uniform sampler2D uRippleTex; // 点击涟漪高度场（r=高度，m）
+uniform float uRippleWorldSize;
 varying vec3 vWorldPos;
 #include <fog_pars_fragment>
 
-float hash12(vec2 p) {
-  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
-}
-float valueNoise(vec2 p) {
-  vec2 i = floor(p);
-  vec2 f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  float a = hash12(i);
-  float b = hash12(i + vec2(1.0, 0.0));
-  float c = hash12(i + vec2(0.0, 1.0));
-  float d = hash12(i + vec2(1.0, 1.0));
-  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-}
+${NOISE_GLSL}
+${SAND_COLOR_GLSL}
 
 void main() {
   float px = vWorldPos.x;
@@ -115,6 +142,24 @@ void main() {
     float dN2 = valueNoise(vWorldPos.xz * 1.1 + vec2(-uTime * 0.23, uTime * 0.41));
     vec3 detailN = vec3((dN1 - 0.5) + (dN2 - 0.5) * 0.7, 0.0, (dN1 - 0.5) * 0.8 - (dN2 - 0.5) * 0.6);
     n = normalize(n + detailN * 0.20 * detailFade);
+  }
+
+  // 点击涟漪（装饰高度场，见 rippleBuffer.ts）：中心差分取高度梯度并入法线。
+  // 不写入 h/雅可比——泡沫判据与仪器读数保持纯物理波形。
+  if (uRippleWorldSize > 0.0) {
+    vec2 ruv = vWorldPos.xz / uRippleWorldSize + 0.5;
+    if (all(greaterThan(ruv, vec2(0.0))) && all(lessThan(ruv, vec2(1.0)))) {
+      float re = 1.5 / 256.0;
+      float hL = texture2D(uRippleTex, ruv - vec2(re, 0.0)).r;
+      float hR = texture2D(uRippleTex, ruv + vec2(re, 0.0)).r;
+      float hD = texture2D(uRippleTex, ruv - vec2(0.0, re)).r;
+      float hU = texture2D(uRippleTex, ruv + vec2(0.0, re)).r;
+      vec2 grad = vec2(hR - hL, hU - hD) / (2.0 * re * uRippleWorldSize); // ∂h/∂x, ∂h/∂z（场景系）
+      float rippleFade = detailFade; // 远处亚像素扰动并入 detail 淡出，防闪烁
+      if (rippleFade > 0.01) {
+        n = normalize(n + vec3(-grad.x, 0.0, -grad.y) * rippleFade);
+      }
+    }
   }
 
   vec3 V = normalize(cameraPosition - vWorldPos);
@@ -157,10 +202,27 @@ void main() {
   float backLit = pow(max(dot(V, -L), 0.0), 3.0) * peakNorm;
   above += vec3(0.10, 0.42, 0.36) * backLit * 0.55;
 
+  // ---- 浅水透底（overlays.shallowMode）：近似折射到海床平面，取沙色 + 焦散 ----
+  // 与海床 mesh 的真实着色同源（sandBase/caustics 纹理），让水上俯视也能"看穿"水面。
+  if (uShallowMix > 0.003) {
+    vec3 refr = refract(-V, n, 0.75); // 空气→水，1/1.333
+    if (refr.y < -0.02) {
+      float tBed = -uShallowDepth / refr.y; // 场景 y 向下到海床平面
+      vec2 bedXZ = vWorldPos.xz + refr.xz * tBed;
+      vec2 bedUv = bedXZ / uCausticsWorldSize + 0.5;
+      float ca = texture2D(uCausticsTex, bedUv).r;
+      vec3 bed = sandBase(bedXZ) * (0.5 + 1.6 * ca) * uSunColor;
+      // 水体吸收：越深越透不见底；掠射角/远处不透（雾与菲涅尔主导）
+      float trans = uShallowMix * exp(-uShallowDepth / 8.0);
+      trans *= smoothstep(0.6, 0.06, fres);
+      trans *= exp(-length(vWorldPos.xz - cameraPosition.xz) * 0.0025);
+      above = mix(above, bed, clamp(trans, 0.0, 0.85));
+    }
+  }
+
   float foamSteep = smoothstep(0.42, 0.9, steepness) * 0.55;
   float foamJac = smoothstep(0.88, 0.25, jac) * 0.8;
-  float whitecap = peakNorm * uWhitecap * smoothstep(0.45, 0.85, peakNorm + steepness * 0.4);
-  // 泡沫包络：时间积累缓冲（雅可比/白帽注入 + 指数衰减 + 风漂，波峰掠过后
+  float whitecap = peakNorm * uWhitecap * smoothstep(0.45, 0.85, peakNorm + steepness * 0.4);  // 泡沫包络：时间积累缓冲（雅可比/白帽注入 + 指数衰减 + 风漂，波峰掠过后
   // 余沫留存数秒）为主，瞬时阈值保留 0.7 权重作细节兜底。
   float foamInst = clamp(max(foamSteep + foamJac, whitecap), 0.0, 1.0);
   vec2 foamUv = vWorldPos.xz / uFoamWorldSize + 0.5;

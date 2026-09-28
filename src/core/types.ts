@@ -116,6 +116,11 @@ export interface OverlayState {
   showTrails: boolean;
   /** 冻结波形（暂停空间形态、只走时间，用于观察质点轨迹） */
   freezeWaveform: boolean;
+  /** 浅水可视化模式：显示程序化海床 + 焦散光网 + 浅水透底（纯视觉层，
+   *  不改变物理波形、色散关系与仪器读数；见 SPEC §6.4 渲染层约定） */
+  shallowMode: boolean;
+  /** 浅水视觉水深（m），范围 [4, 30]；仅 shallowMode 开启时生效 */
+  shallowDepth: number;
 }
 
 /** 探针位置（水平坐标，m）：η(t) 时间序列 / 波高尺的采样点 */

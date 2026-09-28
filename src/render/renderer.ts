@@ -13,13 +13,24 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import type { SimClock } from '../core/clock';
 import type { Store } from '../core/store';
 import type { QualityLevel, SimState, ViewKind } from '../core/types';
-import { shouldAutoDowngrade } from './logic/quality';
+import {
+  nextRenderScale,
+  shouldAutoDowngrade,
+  RENDER_SCALE_INTERVAL_S,
+  RENDER_SCALE_MIN,
+  RENDER_SCALE_MAX,
+  AUTO_DOWNGRADE_WARMUP_S,
+} from './logic/quality';
+import { VISUAL_DEFAULT_DEPTH } from './oceanSurface';
 import type { WaveField } from '../physics/waveField';
 import { createCameraRig } from './cameraRig';
 import { createOceanSurface } from './oceanSurface';
 import { createParticleField } from './particleSystems';
 import { createSceneProps } from './props';
 import type { WaveMakerVisual } from './props';
+import { createSeabed } from './seabed';
+import { createCausticsBuffer } from './causticsBuffer';
+import { createRippleBuffer } from './rippleBuffer';
 import {
   createParticlePool,
   emitParticle,
@@ -155,6 +166,14 @@ export function createRenderer(deps: RendererDeps): Renderer {
   // ---------- 物理泡沫积累缓冲（ping-pong RT，见 foamBuffer.ts）----------
   const foam = createFoamBuffer(threeRenderer);
 
+  // ---------- 浅水可视化层（overlays.shallowMode，纯装饰，见各模块头注释）----------
+  const caustics = createCausticsBuffer(threeRenderer);
+  const seabed = createSeabed();
+  scene.add(seabed.mesh);
+  const ripple = createRippleBuffer(threeRenderer);
+  /** 浅水模式过渡权重（0..1，指数趋近目标） */
+  let shallowMix = 0;
+
   // ---------- 体积光遮挡资源（太阳遮罩 + 黑色波面遮挡体，见 godRays.ts）----------
   const MASK_SCALE = 0.5;
   const maskRT = new THREE.WebGLRenderTarget(
@@ -173,6 +192,7 @@ export function createRenderer(deps: RendererDeps): Renderer {
     marineSnow.points,
     tracer.group,
     props.group,
+    seabed.mesh, // 体积光遮罩里海床按不可见处理（遮罩只关心天空与波面轮廓）
   ];
 
   // ---------- 后处理链（全部来自 three 官方 addons，零新增依赖）----------
@@ -282,9 +302,12 @@ export function createRenderer(deps: RendererDeps): Renderer {
   const sunPoint = new THREE.Vector3();
   const camForward = new THREE.Vector3();
 
-  /** 遮罩渲染：换材质 → 半分辨率 RT 渲染太阳+黑色波面 → 恢复（遮挡=真实波形） */
+  /** 遮罩渲染：换材质 → 半分辨率 RT 渲染太阳+黑色波面 → 恢复（遮挡=真实波形）。
+   *  可见性按「记录原值 → 关 → 恢复原值」处理：maskHidden 中海床的 visible
+   *  由浅水模式动态控制，不能盲目恢复为 true。 */
   function renderSunMask(): void {
     const bg = scene.background;
+    const prevVisible = maskHidden.map((obj) => obj.visible);
     scene.background = maskBackground;
     sky.mesh.material = sunMaskMaterial;
     ocean.mesh.material = blackOccluder;
@@ -295,7 +318,9 @@ export function createRenderer(deps: RendererDeps): Renderer {
     scene.background = bg;
     sky.mesh.material = skyMaterial;
     ocean.mesh.material = oceanMaterial;
-    for (const obj of maskHidden) obj.visible = true;
+    maskHidden.forEach((obj, i) => {
+      obj.visible = prevVisible[i] ?? true;
+    });
   }
 
   function updateGodRays(): void {
@@ -358,7 +383,37 @@ export function createRenderer(deps: RendererDeps): Renderer {
     if (qualityLevel !== 'low' || frameIndex % 2 === 0) {
       foam.update(particleDt, waveT, waveField.whitecapIntensity(), wind.dirDeg, worldSize, pack);
     }
-    ocean.update(pack, waveT, waveField.whitecapIntensity(), waveField.depth, foam.texture);
+
+    // 2.6 浅水可视化层（overlays.shallowMode，纯装饰）：模式过渡 → 海床/焦散/涟漪
+    const shallowTarget = state.overlays.shallowMode ? 1 : 0;
+    shallowMix += (shallowTarget - shallowMix) * (1 - Math.exp(-4 * dt));
+    const shallowActive = shallowMix > 0.003;
+    const shallowDepth = state.overlays.shallowDepth;
+    seabed.mesh.visible = shallowActive;
+    if (shallowActive) {
+      seabed.configure(shallowDepth, worldSize, caustics.texture);
+      seabed.setTime(waveT);
+      // 焦散纹理与泡沫同策略：低配隔帧更新（512² 单 pass，开销小）
+      if (qualityLevel !== 'low' || frameIndex % 2 === 0) {
+        caustics.update(waveT, worldSize, shallowDepth, pack);
+      }
+    }
+    ripple.update(particleDt, worldSize);
+
+    // 水色调色深度：深水用视觉默认 80，有限物理水深用实际值——过渡插值以它
+    // 为基点，避免浅水开/关时调色跳变（例如物理 10 m → 跳 80 m 再滑回来）
+    const baseDepth = Number.isFinite(waveField.depth) ? waveField.depth : VISUAL_DEFAULT_DEPTH;
+    const colorDepth = shallowActive
+      ? baseDepth + (shallowDepth - baseDepth) * shallowMix
+      : waveField.depth;
+    ocean.update(pack, waveT, waveField.whitecapIntensity(), colorDepth, foam.texture, {
+      causticsTex: caustics.texture,
+      causticsWorldSize: worldSize,
+      shallowMix,
+      shallowDepth,
+      rippleTex: ripple.texture,
+      rippleWorldSize: ripple.available ? worldSize : 0,
+    });
 
     // 3. 剖面波形曲线（真实 evalSurface 采样）
     props.updateProfileLine(worldSize, (py) => waveField.evalSurface(0, py, waveT).eta);
@@ -414,13 +469,61 @@ export function createRenderer(deps: RendererDeps): Renderer {
 
     composer.render();
 
-    // FPS 自适应：滑动平均帧时长超阈值 → 自动切流畅档（只降不升，防抖动）
-    if (shouldAutoDowngrade(avgFrameMs, qualityLevel, autoDowngraded, simElapsed)) {
+    // FPS 自适应（粗档位）：先让动态分辨率发挥（renderScale 到下限仍有富余
+    // 压力才允许降档，与 SPEC §10「先降分辨率，不够再降档」的顺序一致）
+    if (
+      shouldAutoDowngrade(avgFrameMs, qualityLevel, autoDowngraded, simElapsed) &&
+      renderScale <= RENDER_SCALE_MIN + 0.01
+    ) {
       autoDowngraded = true;
       setQuality('low');
       onAutoDowngrade?.();
     }
+
+    // 连续动态分辨率（细粒度）：档位内调像素比。预热期传入 0 帧时长（只升，
+    // 首帧着色器编译的尖峰会误导降采样判定），之后按滑动平均帧时长双向调整。
+    scaleTimer += dt;
+    if (scaleTimer >= RENDER_SCALE_INTERVAL_S) {
+      scaleTimer = 0;
+      const probe = simElapsed > AUTO_DOWNGRADE_WARMUP_S ? avgFrameMs : 0;
+      const next = nextRenderScale(renderScale, probe);
+      if (Math.abs(next - renderScale) > 0.01) {
+        renderScale = next;
+        applyQuality();
+      }
+    }
   }
+
+  // ---------- 点击涟漪（装饰层）：pointerup 判定「轻点」（位移小、时长短），
+  // 与相机轨道拖拽互不干扰（rig 只消费拖拽增量）；射线与 y=0 静水面求交得
+  // 世界点 → 涟漪高度场注入。三个视角均可点击。 ----------
+  const raycaster = new THREE.Raycaster();
+  const seaPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  const hitPoint = new THREE.Vector3();
+  let pressX = 0;
+  let pressY = 0;
+  let pressT = 0;
+  const onRipplePointerDown = (e: PointerEvent): void => {
+    pressX = e.clientX;
+    pressY = e.clientY;
+    pressT = performance.now();
+  };
+  const onRipplePointerUp = (e: PointerEvent): void => {
+    if (disposed) return;
+    const moved = Math.hypot(e.clientX - pressX, e.clientY - pressY);
+    if (moved > 6 || performance.now() - pressT > 400) return; // 拖拽/长按不算轻点
+    if (rig.isTransitioning()) return;
+    const rect = threeRenderer.domElement.getBoundingClientRect();
+    const ndcX = ((e.clientX - rect.left) / Math.max(rect.width, 1)) * 2 - 1;
+    const ndcY = -((e.clientY - rect.top) / Math.max(rect.height, 1)) * 2 + 1;
+    raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), rig.camera);
+    if (!raycaster.ray.intersectPlane(seaPlane, hitPoint)) return;
+    const half = worldSize / 2;
+    if (Math.abs(hitPoint.x) > half || Math.abs(hitPoint.z) > half) return;
+    ripple.splash(hitPoint.x, hitPoint.z, worldSize);
+  };
+  container.addEventListener('pointerdown', onRipplePointerDown);
+  window.addEventListener('pointerup', onRipplePointerUp);
 
   // ---------- store / clock 订阅 ----------
   const unsubscribeStore = store.subscribe((next, prev) => {
@@ -438,10 +541,14 @@ export function createRenderer(deps: RendererDeps): Renderer {
     tracer.sampleAll(simTime, waveField.particleOrbit);
   });
 
-  // ---------- 画质档位 ----------
+  // ---------- 画质档位 + 连续动态分辨率 ----------
+  let renderScale = RENDER_SCALE_MAX;
+  let scaleTimer = 0;
+
   function applyQuality(): void {
     const low = qualityLevel === 'low';
-    threeRenderer.setPixelRatio(low ? 1 : Math.min(window.devicePixelRatio || 1, 2));
+    const base = low ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+    threeRenderer.setPixelRatio(base * renderScale);
     composer.setPixelRatio(threeRenderer.getPixelRatio());
     composer.setSize(container.clientWidth || 1, container.clientHeight || 1);
     bloomPass.enabled = !low;
@@ -511,6 +618,8 @@ export function createRenderer(deps: RendererDeps): Renderer {
       unsubscribeStep();
       window.removeEventListener('resize', onResize);
       document.removeEventListener('visibilitychange', onVisibility);
+      container.removeEventListener('pointerdown', onRipplePointerDown);
+      window.removeEventListener('pointerup', onRipplePointerUp);
       rig.dispose();
       ocean.dispose();
       sky.dispose();
@@ -518,12 +627,15 @@ export function createRenderer(deps: RendererDeps): Renderer {
       sprayField.dispose();
       marineSnow.dispose();
       foam.dispose();
+      caustics.dispose();
+      seabed.dispose();
+      ripple.dispose();
       maskRT.dispose();
       sunMaskMaterial.dispose();
       blackOccluder.dispose();
       tracer.dispose();
       props.dispose();
-      scene.remove(rig.camera, ocean.mesh, sky.mesh, whitecapField.points, sprayField.points, marineSnow.points, tracer.group, props.group, dirLight, hemiLight);
+      scene.remove(rig.camera, ocean.mesh, sky.mesh, whitecapField.points, sprayField.points, marineSnow.points, tracer.group, props.group, seabed.mesh, dirLight, hemiLight);
       composer.dispose();
       threeRenderer.dispose();
       threeRenderer.forceContextLoss();

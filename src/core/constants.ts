@@ -112,7 +112,7 @@ export const DEFAULT_SIM_STATE: SimState = {
   },
   playback: { paused: false, scale: 1 },
   view: 'sea-surface',
-  overlays: { showTrails: false, freezeWaveform: false },
+  overlays: { showTrails: false, freezeWaveform: false, shallowMode: false, shallowDepth: 12 },
   activeInstrument: null,
   probe: { x: 0, y: 0 },
   tasks: INITIAL_TASKS,
