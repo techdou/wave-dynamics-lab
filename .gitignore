@@ -4,11 +4,16 @@ dist/
 coverage/
 *.tsbuildinfo
 
+# 开发工具与本地配置目录（agent 工作区、IDE 配置不上传）
+.zcode/
+.vscode/
+.idea/
+*.code-workspace
+
 # 内部备份与开发状态（不入库）
 .backup-*/
-.zcode/
 
-# 内部文档（规格 / 模型说明等，见 README；不随公开仓库分发）
+# 内部文档（规格 / 模型说明 / 素材生成脚本等，见 README；不随公开仓库分发）
 docs/
 src/physics/MODELS.md
 materials-src/
@@ -20,5 +25,8 @@ materials-src/
 
 # 系统与日志杂项
 .DS_Store
+Thumbs.db
+desktop.ini
+*.log
 npm-debug.log*
 yarn-error.log*
